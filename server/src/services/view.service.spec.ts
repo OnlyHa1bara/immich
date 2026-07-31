@@ -27,6 +27,49 @@ describe(ViewService.name, () => {
       expect(result).toEqual(mockPaths);
       expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledWith(authStub.admin.user.id);
     });
+
+    it('should cache the result for repeated calls', async () => {
+      const mockPaths = ['path1', 'path2'];
+      mocks.view.getUniqueOriginalPaths.mockResolvedValue(mockPaths);
+
+      await sut.getUniqueOriginalPaths(authStub.admin);
+      await sut.getUniqueOriginalPaths(authStub.admin);
+
+      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledTimes(1);
+    });
+
+    it('should refresh the cache after an asset is created', async () => {
+      const mockPaths = ['path1'];
+      mocks.view.getUniqueOriginalPaths.mockResolvedValue(mockPaths);
+
+      await sut.getUniqueOriginalPaths(authStub.admin);
+      sut.onAssetCreate({ asset: { id: 'asset-id', ownerId: authStub.admin.user.id } });
+      await sut.getUniqueOriginalPaths(authStub.admin);
+
+      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledTimes(2);
+    });
+
+    it('should refresh the cache after an asset is deleted', async () => {
+      const mockPaths = ['path1'];
+      mocks.view.getUniqueOriginalPaths.mockResolvedValue(mockPaths);
+
+      await sut.getUniqueOriginalPaths(authStub.admin);
+      sut.onAssetDelete({ assetId: 'asset-id', userId: authStub.admin.user.id });
+      await sut.getUniqueOriginalPaths(authStub.admin);
+
+      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledTimes(2);
+    });
+
+    it('should refresh the cache after assets are bulk deleted', async () => {
+      const mockPaths = ['path1'];
+      mocks.view.getUniqueOriginalPaths.mockResolvedValue(mockPaths);
+
+      await sut.getUniqueOriginalPaths(authStub.admin);
+      sut.onAssetDeleteAll({ assetIds: ['asset-1'], userId: authStub.admin.user.id });
+      await sut.getUniqueOriginalPaths(authStub.admin);
+
+      expect(mocks.view.getUniqueOriginalPaths).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('getAssetsByOriginalPath', () => {
