@@ -70,7 +70,6 @@ export interface TrashAssets {
 export type PendingChange = AddAsset | UpdateAsset | DeleteAsset | TrashAssets;
 
 export type ScrubberMonth = {
-  height: number;
   assetCount: number;
   year: number;
   month: number;

@@ -85,6 +85,24 @@ const mockTimeBuckets = (
     getTimeBucket: ({ params }) => ({ json: bucketAssetsResponse[params.timeBucket] }),
   });
 
+function createScrollableElement() {
+  const element = document.createElement('div');
+  Object.defineProperty(element, 'scrollTop', { configurable: true, value: 0, writable: true });
+  Object.defineProperty(element, 'scrollTo', {
+    configurable: true,
+    value: ({ top = 0 }: ScrollToOptions) => {
+      element.scrollTop = top;
+    },
+  });
+  Object.defineProperty(element, 'scrollBy', {
+    configurable: true,
+    value: (_x: number, y: number) => {
+      element.scrollTop += y;
+    },
+  });
+  return element;
+}
+
 describe('TimelineManager', () => {
   describe('init', () => {
     let timelineManager: TimelineManager;
@@ -128,6 +146,81 @@ describe('TimelineManager', () => {
 
     test('calculates timeline height', () => {
       expect(timelineManager.totalViewerHeight).toBe(4434);
+    });
+
+    test('positions a small timeline on a plane matching its content height', () => {
+      const [firstMonth, secondMonth, thirdMonth] = timelineManager.months;
+
+      expect(timelineManager.planeHeight).toBe(timelineManager.totalViewerHeight);
+      expect(firstMonth.planeTop).toBe(timelineManager.topSectionHeight);
+      expect(secondMonth.planeTop).toBe(firstMonth.planeTop + firstMonth.height);
+      expect(thirdMonth.planeTop).toBe(secondMonth.planeTop + secondMonth.height);
+    });
+  });
+
+  describe('fixed scroll plane', () => {
+    let timelineManager: TimelineManager;
+    let scrollableElement: HTMLDivElement;
+
+    beforeEach<Context>(async ({ api }) => {
+      timelineManager = new TimelineManager();
+      api.on({
+        getTimeBuckets: () => ({
+          json: [
+            { count: 1, timeBucket: '2024-03-01' },
+            { count: 1, timeBucket: '2024-02-01' },
+            { count: 1, timeBucket: '2024-01-01' },
+          ],
+        }),
+        getTimeBucket: () => ({ json: toResponseDto() }),
+      });
+      scrollableElement = createScrollableElement();
+      timelineManager.scrollableElement = scrollableElement;
+      await timelineManager.updateViewport({ width: 1588, height: 0 });
+
+      for (const month of timelineManager.months) {
+        month.height = 300_000;
+      }
+      timelineManager.anchorMonthIndex = 1;
+      timelineManager.anchorPlaneTop = 250_000;
+      timelineManager.positionMonthsOnPlane();
+    });
+
+    afterEach(() => {
+      timelineManager.destroy();
+    });
+
+    test('bounds the scroll plane while retaining the full month layout', () => {
+      expect(timelineManager.planeHeight).toBe(500_000);
+      expect(timelineManager.months.map((month) => month.planeTop)).toEqual([-50_000, 250_000, 550_000]);
+    });
+
+    test('jumps to a month by repointing it on the plane', () => {
+      timelineManager.jumpToMonth({ monthIndex: 1, fractionInMonth: 0.5 });
+
+      expect(timelineManager.anchorMonthIndex).toBe(1);
+      expect(timelineManager.months[1].planeTop).toBe(250_000);
+      expect(scrollableElement.scrollTop).toBe(400_000);
+    });
+
+    test('preserves the viewport position when the anchored month height changes', () => {
+      timelineManager.jumpToMonth({ monthIndex: 1, fractionInMonth: 0.5 });
+      timelineManager.months[1].height = 300_100;
+
+      expect(scrollableElement.scrollTop).toBe(400_000);
+      expect(timelineManager.months[1].planeTop).toBe(249_950);
+      expect(
+        (scrollableElement.scrollTop - timelineManager.months[1].planeTop) / timelineManager.months[1].height,
+      ).toBeCloseTo(0.5);
+    });
+
+    test('recenters near a plane edge without changing the visible content', () => {
+      scrollableElement.scrollTop = 10_000;
+      timelineManager.updateSlidingWindow();
+
+      expect(timelineManager.anchorMonthIndex).toBe(0);
+      expect(timelineManager.months[0].planeTop).toBe(timelineManager.topSectionHeight);
+      expect(scrollableElement.scrollTop).toBe(60_000);
     });
   });
 
@@ -226,6 +319,7 @@ describe('TimelineManager', () => {
     test('is empty initially', () => {
       expect(timelineManager.months.length).toEqual(0);
       expect(timelineManager.assetCount).toEqual(0);
+      expect(timelineManager.planeHeight).toBe(timelineManager.totalViewerHeight);
     });
 
     test('adds assets to new month', () => {

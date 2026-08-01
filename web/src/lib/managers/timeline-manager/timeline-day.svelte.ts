@@ -201,6 +201,6 @@ export class TimelineDay {
   }
 
   get absoluteTimelineDayTop() {
-    return this.timelineMonth.top + this.#top;
+    return this.timelineMonth.planeTop + this.#top;
   }
 }
