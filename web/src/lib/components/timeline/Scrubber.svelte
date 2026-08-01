@@ -128,9 +128,27 @@
   const scrollY = $derived(
     toScrollFromTimelineMonthPercentage(viewportTopMonth, viewportTopMonthScrollPercent, timelineScrollPercent),
   );
-  const timelineFullHeight = $derived(timelineManager.scrubberTimelineHeight);
-  const relativeTopOffset = $derived(toScrollY(timelineTopOffset / timelineFullHeight));
-  const relativeBottomOffset = $derived(toScrollY(timelineBottomOffset / timelineFullHeight));
+  const estimateMonthHeight = (assetCount: number) => {
+    const viewportWidth = timelineManager.viewportWidth;
+    const rowHeight = timelineManager.rowHeight;
+    const headerHeight = timelineManager.headerHeight;
+    if (viewportWidth === 0) {
+      return headerHeight + rowHeight;
+    }
+    const rows = Math.ceil(((3 / 2) * assetCount * rowHeight * (7 / 10)) / viewportWidth);
+    return headerHeight + Math.max(1, rows) * rowHeight;
+  };
+
+  const totalEstimatedHeight = $derived.by(() => {
+    let total = timelineManager.topSectionHeight + timelineManager.bottomSectionHeight;
+    for (const month of timelineManager.scrubberMonths) {
+      total += estimateMonthHeight(month.assetCount);
+    }
+    return total;
+  });
+
+  const relativeTopOffset = $derived(toScrollY(timelineManager.topSectionHeight / totalEstimatedHeight));
+  const relativeBottomOffset = $derived(toScrollY(timelineManager.bottomSectionHeight / totalEstimatedHeight));
 
   type Segment = {
     count: number;
@@ -155,7 +173,7 @@
     const reversed = [...months].reverse();
 
     for (const scrubMonth of reversed) {
-      const scrollBarPercentage = scrubMonth.height / timelineFullHeight;
+      const scrollBarPercentage = estimateMonthHeight(scrubMonth.assetCount) / totalEstimatedHeight;
 
       const segment = {
         top,
@@ -275,6 +293,24 @@
 
   const getActive = (x: number, y: number) => {
     const elements = document.elementsFromPoint(x, y);
+    // Year labels are bottom-aligned to their month segment. With dense months
+    // (very large libraries) a segment can be only a few pixels or even 0px
+    // tall, so the label text overflows onto neighbouring months and a click
+    // would target the wrong segment. Snap to the label's own segment instead.
+    const yearLabel = elements.find(
+      (element): element is HTMLElement => element instanceof HTMLElement && element.dataset.yearLabel !== undefined,
+    );
+    if (yearLabel) {
+      const segment = yearLabel.closest('[data-id=time-segment]') as HTMLElement | null;
+      if (segment) {
+        return {
+          isOnPaddingTop: false,
+          isOnPaddingBottom: false,
+          segment,
+          timelineMonthPercentY: 0,
+        };
+      }
+    }
     const bestElement = findElementBestY(elements, y, 'time-segment', 'lead-in', 'lead-out');
 
     if (bestElement) {
@@ -494,7 +530,13 @@
 
 <svelte:window
   bind:innerHeight={windowHeight}
-  onmousemove={({ clientY }) => (isDragging || isHover) && handleMouseEvent({ clientY })}
+  onmousemove={(e) => {
+    if (isDragging && (e.buttons & 1) === 0) {
+      handleMouseEvent({ clientY: e.clientY, isDragging: false });
+    } else if (isDragging || isHover) {
+      handleMouseEvent({ clientY: e.clientY });
+    }
+  }}
   onmousedown={({ clientY }) => isHover && handleMouseEvent({ clientY, isDragging: true })}
   onmouseup={({ clientY }) => handleMouseEvent({ clientY, isDragging: false })}
 />
@@ -590,7 +632,7 @@
     >
       {#if !usingMobileDevice}
         {#if segment.hasLabel}
-          <div class="absolute inset-e-5 bottom-0 font-mono text-[13px] dark:text-immich-dark-fg">
+          <div data-year-label class="absolute inset-e-5 bottom-0 font-mono text-[13px] dark:text-immich-dark-fg">
             {segment.year}
           </div>
         {/if}
