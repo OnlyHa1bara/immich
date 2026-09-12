@@ -8,6 +8,11 @@ export const envData: EnvData = {
   environment: ImmichEnvironment.Production,
   logFormat: LogFormat.Console,
 
+  job: {
+    timeoutWarnMs: 30 * 60 * 1000,
+    timeoutMs: 0,
+  },
+
   buildMetadata: {},
   bull: {
     config: {

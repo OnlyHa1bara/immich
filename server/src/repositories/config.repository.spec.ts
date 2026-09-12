@@ -11,6 +11,8 @@ const resetEnv = () => {
     'IMMICH_ALLOW_EXTERNAL_PLUGINS',
     'IMMICH_ALLOW_SETUP',
     'IMMICH_ENV',
+    'IMMICH_JOB_TIMEOUT_WARN_MS',
+    'IMMICH_JOB_TIMEOUT_MS',
     'IMMICH_WORKERS_INCLUDE',
     'IMMICH_WORKERS_EXCLUDE',
     'IMMICH_TRUSTED_PROXIES',
@@ -80,6 +82,47 @@ describe('getEnv', () => {
 
     expect(config.plugins.external).toEqual({ allow: false });
     expect(config.setup).toEqual({ allow: true });
+    expect(config.job).toEqual({ timeoutWarnMs: 30 * 60 * 1000, timeoutMs: 0 });
+  });
+
+  describe('job', () => {
+    it('should parse configured timeouts', () => {
+      process.env.IMMICH_JOB_TIMEOUT_WARN_MS = '1000';
+      process.env.IMMICH_JOB_TIMEOUT_MS = '2000';
+
+      expect(getEnv().job).toEqual({ timeoutWarnMs: 1000, timeoutMs: 2000 });
+    });
+
+    it('should allow independently disabling timeouts', () => {
+      process.env.IMMICH_JOB_TIMEOUT_WARN_MS = '0';
+      process.env.IMMICH_JOB_TIMEOUT_MS = '1000';
+
+      expect(getEnv().job).toEqual({ timeoutWarnMs: 0, timeoutMs: 1000 });
+
+      process.env.IMMICH_JOB_TIMEOUT_WARN_MS = '1000';
+      process.env.IMMICH_JOB_TIMEOUT_MS = '0';
+
+      expect(getEnv().job).toEqual({ timeoutWarnMs: 1000, timeoutMs: 0 });
+    });
+
+    it.each([
+      ['IMMICH_JOB_TIMEOUT_WARN_MS', '-1'],
+      ['IMMICH_JOB_TIMEOUT_MS', '1.5'],
+      ['IMMICH_JOB_TIMEOUT_MS', '2147483648'],
+    ])('should reject invalid %s values', (key, value) => {
+      process.env[key] = value;
+
+      expect(() => getEnv()).toThrowError(`[${key}]`);
+    });
+
+    it('should require the warning timeout to be less than the hard timeout when both are enabled', () => {
+      process.env.IMMICH_JOB_TIMEOUT_WARN_MS = '1000';
+      process.env.IMMICH_JOB_TIMEOUT_MS = '1000';
+
+      expect(() => getEnv()).toThrowError(
+        '[IMMICH_JOB_TIMEOUT_WARN_MS] Must be less than IMMICH_JOB_TIMEOUT_MS when both timeouts are enabled',
+      );
+    });
   });
 
   describe('IMMICH_MEDIA_LOCATION', () => {

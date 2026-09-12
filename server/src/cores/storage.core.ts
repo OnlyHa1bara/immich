@@ -35,6 +35,8 @@ export interface MoveRequest {
   };
 }
 
+export type MoveFileResult = { ok: boolean; path: string | null };
+
 export type ThumbnailPathEntity = { id: string; ownerId: string };
 
 export type PersonThumbnailPathEntity = { personGroupId: string; ownerId: string };
@@ -195,13 +197,47 @@ export class StorageCore {
     }
   }
 
-  async moveFile(request: MoveRequest) {
+  async moveFile(request: MoveRequest): Promise<boolean> {
+    const result = await this.moveFileWithResult(request);
+    return result.ok;
+  }
+
+  async moveFileWithResult(request: MoveRequest): Promise<MoveFileResult> {
     const { entityId, ownerId, pathType, oldPath, newPath, assetInfo } = request;
-    if (!oldPath || oldPath === newPath) {
-      return;
+    if (!oldPath) {
+      return { ok: true, path: newPath };
     }
 
-    this.ensureFolders(newPath);
+    if (oldPath === newPath) {
+      const move = await this.moveRepository.getByEntity(entityId, pathType);
+      if (!move || move.newPath !== newPath) {
+        return { ok: true, path: newPath };
+      }
+
+      if (pathType === AssetPathType.Original && !assetInfo) {
+        this.logger.warn(`Unable to complete move. Missing asset info for ${entityId}`);
+        return { ok: false, path: null };
+      }
+
+      if (!(await this.storageRepository.checkFileExists(move.newPath))) {
+        this.logger.warn('Unable to complete move. File does not exist at the new location.');
+        return { ok: false, path: null };
+      }
+
+      if (!(await this.verifyNewPathContentsMatchesExpected(move.oldPath, move.newPath, assetInfo, true))) {
+        this.logger.fatal(`Skipping stale move cleanup as file verification failed at the new location`);
+        return { ok: false, path: null };
+      }
+
+      await this.savePath(pathType, entityId, move.newPath, ownerId);
+      await this.moveRepository.delete(move.id);
+      return { ok: true, path: move.newPath };
+    }
+
+    if (pathType === AssetPathType.Original && !assetInfo) {
+      this.logger.warn(`Unable to complete move. Missing asset info for ${entityId}`);
+      return { ok: false, path: null };
+    }
 
     let move = await this.moveRepository.getByEntity(entityId, pathType);
     if (move) {
@@ -212,7 +248,7 @@ export class StorageCore {
       const actualPath = isOldPathExists ? move.oldPath : newPathCheck;
       if (!actualPath) {
         this.logger.warn('Unable to complete move. File does not exist at either location.');
-        return;
+        return { ok: false, path: null };
       }
 
       const isFileAtNewLocation = actualPath === move.newPath;
@@ -220,12 +256,18 @@ export class StorageCore {
 
       if (
         isFileAtNewLocation &&
-        !(await this.verifyNewPathContentsMatchesExpected(move.oldPath, move.newPath, assetInfo))
+        !(await this.verifyNewPathContentsMatchesExpected(move.oldPath, move.newPath, assetInfo, true))
       ) {
         this.logger.fatal(
           `Skipping move as file verification failed, old file is missing and new file is different to what was expected`,
         );
-        return;
+        return { ok: false, path: null };
+      }
+
+      if (isFileAtNewLocation) {
+        await this.savePath(pathType, entityId, move.newPath, ownerId);
+        await this.moveRepository.delete(move.id);
+        return { ok: true, path: move.newPath };
       }
 
       move = await this.moveRepository.update(move.id, { id: move.id, oldPath: actualPath, newPath });
@@ -233,10 +275,7 @@ export class StorageCore {
       move = await this.moveRepository.create({ entityId, pathType, oldPath, newPath });
     }
 
-    if (pathType === AssetPathType.Original && !assetInfo) {
-      this.logger.warn(`Unable to complete move. Missing asset info for ${entityId}`);
-      return;
-    }
+    this.ensureFolders(newPath);
 
     if (move.oldPath !== newPath) {
       try {
@@ -247,7 +286,7 @@ export class StorageCore {
           this.logger.warn(
             `Unable to complete move. Error renaming file with code ${error.code} and message: ${error.message}`,
           );
-          return;
+          return { ok: false, path: null };
         }
         this.logger.debug(`Unable to rename file. Falling back to copy, verify and delete`);
         await this.storageRepository.copyFile(move.oldPath, newPath);
@@ -255,7 +294,7 @@ export class StorageCore {
         if (!(await this.verifyNewPathContentsMatchesExpected(move.oldPath, newPath, assetInfo))) {
           this.logger.warn(`Skipping move due to file size mismatch`);
           await this.storageRepository.unlink(newPath);
-          return;
+          return { ok: false, path: null };
         }
 
         const { atime, mtime } = await this.storageRepository.stat(move.oldPath);
@@ -271,29 +310,83 @@ export class StorageCore {
 
     await this.savePath(pathType, entityId, newPath, ownerId);
     await this.moveRepository.delete(move.id);
+    return { ok: true, path: newPath };
   }
 
   private async verifyNewPathContentsMatchesExpected(
     oldPath: string,
     newPath: string,
     assetInfo?: { sizeInBytes: number; checksum: Buffer },
-  ) {
-    const oldStat = await this.storageRepository.stat(oldPath);
+    allowUnverifiedRecovery = false,
+  ): Promise<boolean> {
     const newStat = await this.storageRepository.stat(newPath);
-    const oldPathSize = assetInfo ? assetInfo.sizeInBytes : oldStat.size;
+    if (!assetInfo && allowUnverifiedRecovery) {
+      try {
+        await this.storageRepository.stat(oldPath);
+      } catch (error: Error | any) {
+        if (error.code === 'ENOENT') {
+          try {
+            const [oldDirectory, newDirectory] = await Promise.all([
+              this.storageRepository.stat(dirname(oldPath)),
+              this.storageRepository.stat(dirname(newPath)),
+            ]);
+            if (
+              !Number.isFinite(oldDirectory.dev) ||
+              !Number.isFinite(newDirectory.dev) ||
+              oldDirectory.dev !== newDirectory.dev
+            ) {
+              this.logger.warn(
+                `Unable to complete unverified recovery for ${newPath}; source and destination directories are not verified on the same device`,
+              );
+              return false;
+            }
+          } catch (directoryError: Error | any) {
+            if (directoryError.code === 'ENOENT') {
+              this.logger.warn(`Unable to complete unverified recovery for ${newPath}; a parent directory is missing`);
+              return false;
+            }
+
+            throw directoryError;
+          }
+
+          this.logger.warn(
+            `Accepting unverified recovery for ${newPath}; ${oldPath} is missing and both directories are on the same device`,
+          );
+          return true;
+        }
+
+        throw error;
+      }
+
+      this.logger.warn(`Unable to complete move. Missing asset info for ${newPath}`);
+      return false;
+    }
+
+    let oldPathSize: number;
+    if (assetInfo) {
+      oldPathSize = assetInfo.sizeInBytes;
+    } else {
+      const oldStat = await this.storageRepository.stat(oldPath);
+      oldPathSize = oldStat.size;
+    }
     const newPathSize = newStat.size;
     this.logger.debug(`File size check: ${newPathSize} === ${oldPathSize}`);
     if (newPathSize !== oldPathSize) {
       this.logger.warn(`Unable to complete move. File size mismatch: ${newPathSize} !== ${oldPathSize}`);
       return false;
     }
+
+    if (!assetInfo) {
+      return true;
+    }
+
     const repos = {
       configRepo: this.configRepository,
       metadataRepo: this.systemMetadataRepository,
       logger: this.logger,
     };
     const config = await getConfig(repos, { withCache: true });
-    if (assetInfo && config.storageTemplate.hashVerificationEnabled) {
+    if (config.storageTemplate.hashVerificationEnabled) {
       const { checksum } = assetInfo;
       const newChecksum = await this.cryptoRepository.hashFile(newPath);
       if (!newChecksum.equals(checksum)) {

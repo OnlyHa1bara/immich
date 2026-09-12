@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { SystemConfig, defaults } from 'src/dtos/config.dto.js';
-import { ImmichWorker, JobName, QueueCommand, QueueName } from 'src/enum.js';
+import { CronJob, DatabaseLock, ImmichWorker, JobName, QueueCommand, QueueName } from 'src/enum.js';
 import { QueueService } from 'src/services/queue.service.js';
 import { factory } from 'test/small.factory.js';
 import { ServiceMocks, newTestService } from 'test/utils.js';
@@ -17,6 +17,68 @@ describe(QueueService.name, () => {
 
   it('should work', () => {
     expect(sut).toBeDefined();
+  });
+
+  describe('onBootstrap', () => {
+    it('should not start workers for microservices', () => {
+      sut.onBootstrap();
+
+      expect(mocks.job.setup).toHaveBeenCalledWith([]);
+      expect(mocks.job.startWorkers).not.toHaveBeenCalled();
+      expect(mocks.job.watchWorkers).not.toHaveBeenCalled();
+      expect(mocks.job.setConcurrency).not.toHaveBeenCalled();
+    });
+
+    it('should watch workers for the API', () => {
+      mocks.config.getWorker.mockReturnValue(ImmichWorker.Api);
+
+      sut.onBootstrap();
+
+      expect(mocks.job.setup).toHaveBeenCalledWith([]);
+      expect(mocks.job.watchWorkers).toHaveBeenCalled();
+      expect(mocks.job.startWorkers).not.toHaveBeenCalled();
+      expect(mocks.job.setConcurrency).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('onConfigInit', () => {
+    it('should schedule nightly API jobs without starting workers or updating concurrency', async () => {
+      mocks.config.getWorker.mockReturnValue(ImmichWorker.Api);
+      mocks.database.tryLock.mockResolvedValue(true);
+      mocks.cron.create.mockReturnValue(undefined);
+
+      await sut.onConfigInit({ newConfig: defaults });
+
+      expect(mocks.database.tryLock).toHaveBeenCalledWith(DatabaseLock.NightlyJobs);
+      expect(mocks.cron.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: CronJob.NightlyJobs,
+          expression: '0 0 * * *',
+          start: true,
+        }),
+      );
+      expect(mocks.job.startWorkers).not.toHaveBeenCalled();
+      expect(mocks.job.setConcurrency).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('onConfigInitWorkers', () => {
+    it('should start workers before updating concurrency', () => {
+      const calls: string[] = [];
+      mocks.job.startWorkers.mockImplementation(() => {
+        calls.push('startWorkers');
+      });
+      mocks.job.setConcurrency.mockImplementation(() => {
+        calls.push('setConcurrency');
+      });
+
+      sut.onConfigInitWorkers({ newConfig: defaults });
+
+      expect(calls).toEqual([
+        'startWorkers',
+        ...Array.from({ length: Object.values(QueueName).length }, () => 'setConcurrency'),
+      ]);
+    });
   });
 
   describe('onConfigUpdate', () => {

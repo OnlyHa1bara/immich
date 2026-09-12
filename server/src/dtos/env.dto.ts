@@ -13,6 +13,8 @@ enum DatabaseSslMode {
 
 const DatabaseSslModeSchema = z.enum(DatabaseSslMode).describe('Database SSL mode').meta({ id: 'DatabaseSslMode' });
 const absolutePath = z.string().regex(/^\//, 'Must be an absolute path').optional();
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
+const jobTimeoutSchema = z.coerce.number().int().min(0).max(MAX_NODE_TIMER_DELAY_MS).optional();
 /**
  * Treat certain strings as booleans and coerce them to boolean
  * Ideal for environment variables that are strings but should be treated as booleans
@@ -47,6 +49,8 @@ export const EnvSchema = z
     IMMICH_ENV: ImmichEnvironmentSchema.optional(),
     IMMICH_HOST: z.string().optional(),
     IMMICH_IGNORE_MOUNT_CHECK_ERRORS: stringBool.optional(),
+    IMMICH_JOB_TIMEOUT_WARN_MS: jobTimeoutSchema,
+    IMMICH_JOB_TIMEOUT_MS: jobTimeoutSchema,
     IMMICH_LOG_LEVEL: LogLevelSchema.optional(),
     IMMICH_LOG_FORMAT: LogFormatSchema.optional(),
     IMMICH_MEDIA_LOCATION: absolutePath,
@@ -86,5 +90,16 @@ export const EnvSchema = z
     REDIS_PASSWORD: z.string().optional(),
     REDIS_SOCKET: z.string().optional(),
     REDIS_URL: z.string().optional(),
+  })
+  .superRefine((data, context) => {
+    const warnMs = data.IMMICH_JOB_TIMEOUT_WARN_MS;
+    const timeoutMs = data.IMMICH_JOB_TIMEOUT_MS;
+    if (warnMs && timeoutMs && warnMs >= timeoutMs) {
+      context.addIssue({
+        code: 'custom',
+        path: ['IMMICH_JOB_TIMEOUT_WARN_MS'],
+        message: 'Must be less than IMMICH_JOB_TIMEOUT_MS when both timeouts are enabled',
+      });
+    }
   })
   .meta({ id: 'EnvDto' });
