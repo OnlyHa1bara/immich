@@ -2,7 +2,7 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { ModuleRef, Reflector } from '@nestjs/core';
 import { JobsOptions, Queue, Worker } from 'bullmq';
-import { setTimeout } from 'node:timers/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { JobCounts, JobItem, JobOf } from 'src/types.js';
 import { JobConfig } from 'src/decorators.js';
 import { QueueJobResponseDto, QueueJobSearchDto } from 'src/dtos/queue.dto.js';
@@ -18,6 +18,8 @@ type JobMapItem = {
   handler: (job: JobOf<any>) => Promise<JobStatus>;
   label: string;
 };
+
+type WatchdogJob = JobItem & { id?: string };
 
 const WORKER_WATCH_INTERVAL_MS = 30_000;
 
@@ -91,11 +93,11 @@ export class JobRepository {
     const { bull } = this.configRepository.getEnv();
     for (const queueName of Object.values(QueueName)) {
       this.logger.debug(`Starting worker for queue: ${queueName}`);
-      this.workers[queueName] = new Worker(
-        queueName,
-        (job) => this.eventRepository.emit('JobRun', queueName, job as JobItem),
-        { ...bull.config, concurrency: 1, name: ImmichWorker.Microservices },
-      );
+      this.workers[queueName] = new Worker(queueName, (job) => this.runWithWatchdog(queueName, job as WatchdogJob), {
+        ...bull.config,
+        concurrency: 1,
+        name: ImmichWorker.Microservices,
+      });
     }
   }
 
@@ -241,7 +243,7 @@ export class JobRepository {
 
     while (pending.length > 0) {
       this.logger.verbose(`Waiting for ${pending[0]} queue to stop...`);
-      await setTimeout(1000);
+      await sleep(1000);
       pending = await getPending();
     }
   }
@@ -279,6 +281,55 @@ export class JobRepository {
       }
       default: {
         return null;
+      }
+    }
+  }
+
+  private async runWithWatchdog(queueName: QueueName, job: WatchdogJob): Promise<void> {
+    const { timeoutWarnMs, timeoutMs } = this.configRepository.getEnv().job;
+    const startedAt = Date.now();
+    let warningTimer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const getDetails = (thresholdMs: number) => {
+      const elapsedMs = Date.now() - startedAt;
+      return `queue=${queueName}, jobId=${job.id ?? 'unknown'}, jobName=${job.name}, elapsedMs=${elapsedMs}, thresholdMs=${thresholdMs}`;
+    };
+
+    try {
+      if (timeoutWarnMs > 0) {
+        warningTimer = setTimeout(() => {
+          this.logger.warn(`Job execution exceeded the warning threshold: ${getDetails(timeoutWarnMs)}`);
+        }, timeoutWarnMs);
+      }
+
+      // The full migration has no cancellation mechanism. Marking its worker promise as failed
+      // while it continues moving files would be unsafe, so it remains exempt from hard timeouts.
+      // Warning logs still apply to make a long-running migration visible.
+      const hardTimeoutMs = job.name === JobName.StorageTemplateMigration ? 0 : timeoutMs;
+      const jobPromise = this.eventRepository.emit('JobRun', queueName, job);
+
+      if (hardTimeoutMs === 0) {
+        await jobPromise;
+        return;
+      }
+
+      await Promise.race([
+        jobPromise,
+        new Promise<never>((_resolve, reject) => {
+          timeoutTimer = setTimeout(() => {
+            const message = `Job execution exceeded the timeout threshold and will be marked as failed: ${getDetails(hardTimeoutMs)}`;
+            this.logger.error(message);
+            reject(new Error(message));
+          }, hardTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (warningTimer) {
+        clearTimeout(warningTimer);
+      }
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
       }
     }
   }

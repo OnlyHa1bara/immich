@@ -33,6 +33,11 @@ export interface EnvData {
   logLevel?: LogLevel;
   logFormat?: LogFormat;
 
+  job: {
+    timeoutWarnMs: number;
+    timeoutMs: number;
+  };
+
   buildMetadata: {
     build?: string;
     buildUrl?: string;
@@ -260,6 +265,11 @@ const getEnv = (): EnvData => {
     configFile: dto.IMMICH_CONFIG_FILE,
     logLevel: dto.IMMICH_LOG_LEVEL,
     logFormat: dto.IMMICH_LOG_FORMAT || LogFormat.Console,
+
+    job: {
+      timeoutWarnMs: dto.IMMICH_JOB_TIMEOUT_WARN_MS ?? 30 * 60 * 1000,
+      timeoutMs: dto.IMMICH_JOB_TIMEOUT_MS ?? 0,
+    },
 
     buildMetadata: {
       build: dto.IMMICH_BUILD,
