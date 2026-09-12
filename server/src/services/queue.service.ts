@@ -41,13 +41,8 @@ export class QueueService extends BaseService {
   private services: (new (...args: any[]) => unknown)[] = [];
   private nightlyJobsLock = false;
 
-  @OnEvent({ name: 'ConfigInit' })
+  @OnEvent({ name: 'ConfigInit', workers: [ImmichWorker.Api] })
   async onConfigInit({ newConfig: config }: ArgOf<'ConfigInit'>) {
-    if (this.worker === ImmichWorker.Microservices) {
-      this.updateConcurrency(config);
-      return;
-    }
-
     this.nightlyJobsLock = await this.databaseRepository.tryLock(DatabaseLock.NightlyJobs);
     if (!this.nightlyJobsLock) {
       return;
@@ -82,11 +77,15 @@ export class QueueService extends BaseService {
   @OnEvent({ name: 'AppBootstrap', priority: BootstrapEventPriority.JobService })
   onBootstrap() {
     this.jobRepository.setup(this.services);
-    if (this.worker === ImmichWorker.Microservices) {
-      this.jobRepository.startWorkers();
-    } else if (this.worker === ImmichWorker.Api) {
+    if (this.worker === ImmichWorker.Api) {
       this.jobRepository.watchWorkers();
     }
+  }
+
+  @OnEvent({ name: 'ConfigInit', workers: [ImmichWorker.Microservices], priority: 100 })
+  onConfigInitWorkers({ newConfig: config }: ArgOf<'ConfigInit'>) {
+    this.jobRepository.startWorkers();
+    this.updateConcurrency(config);
   }
 
   @OnEvent({ name: 'AppShutdown' })

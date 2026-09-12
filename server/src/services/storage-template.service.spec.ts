@@ -1,6 +1,7 @@
 import { Stats } from 'node:fs';
+import { vitest } from 'vitest';
 import { SystemConfig, defaults } from 'src/dtos/config.dto.js';
-import { AssetPathType, AssetType, JobStatus } from 'src/enum.js';
+import { AssetFileType, AssetPathType, AssetType, JobStatus } from 'src/enum.js';
 import { StorageTemplateService } from 'src/services/storage-template.service.js';
 import { AlbumFactory } from 'test/factories/album.factory.js';
 import { AssetFactory } from 'test/factories/asset.factory.js';
@@ -11,6 +12,18 @@ import { ServiceMocks, makeStream, newTestService } from 'test/utils.js';
 
 const motionAsset = AssetFactory.from({ type: AssetType.Video }).exif().build();
 const stillAsset = AssetFactory.from({ livePhotoVideoId: motionAsset.id }).exif().build();
+
+const mockMoveCreate = (mocks: ServiceMocks) => {
+  mocks.move.create.mockImplementation(({ entityId, pathType, oldPath, newPath }) =>
+    Promise.resolve({
+      id: 'move-id',
+      entityId,
+      pathType,
+      oldPath,
+      newPath,
+    }),
+  );
+};
 
 describe(StorageTemplateService.name, () => {
   let sut: StorageTemplateService;
@@ -108,6 +121,75 @@ describe(StorageTemplateService.name, () => {
       expect(mocks.move.create).not.toHaveBeenCalled();
       expect(mocks.move.update).not.toHaveBeenCalled();
       expect(mocks.storage.stat).not.toHaveBeenCalled();
+    });
+
+    it('should fail when the asset is missing file size metadata', async () => {
+      const asset = AssetFactory.from().exif({ fileSizeInByte: null }).build();
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(getForStorageTemplate(asset));
+
+      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Failed);
+
+      expect(mocks.move.create).not.toHaveBeenCalled();
+    });
+
+    it('should migrate a zero-byte asset when file size metadata is present', async () => {
+      const user = UserFactory.create();
+      const asset = AssetFactory.from({
+        fileCreatedAt: new Date('2022-06-19T23:41:36.910Z'),
+      })
+        .owner(user)
+        .exif({ fileSizeInByte: 0 })
+        .build();
+      const newPath = `/data/library/${user.id}/2022/2022-06-19/${asset.originalFileName}`;
+      mocks.user.get.mockResolvedValue(user);
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(getForStorageTemplate(asset));
+      mocks.move.create.mockResolvedValue({
+        id: 'move-id',
+        entityId: asset.id,
+        pathType: AssetPathType.Original,
+        oldPath: asset.originalPath,
+        newPath,
+      });
+
+      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Success);
+
+      expect(mocks.asset.update).toHaveBeenCalledWith({ id: asset.id, originalPath: newPath });
+    });
+
+    it('should fail when the storage template has not initialized', async () => {
+      const asset = AssetFactory.from().exif().build();
+      Object.defineProperty(sut, '_template', { value: null, writable: true });
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(getForStorageTemplate(asset));
+
+      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Failed);
+
+      expect(mocks.move.create).not.toHaveBeenCalled();
+    });
+
+    it('should fail when a live photo motion asset is missing', async () => {
+      const motionId = 'missing-motion-id';
+      const user = UserFactory.create();
+      const asset = AssetFactory.from({
+        livePhotoVideoId: motionId,
+        fileCreatedAt: new Date('2022-06-19T23:41:36.910Z'),
+      })
+        .owner(user)
+        .exif()
+        .build();
+      const newPath = `/data/library/${user.id}/2022/2022-06-19/${asset.originalFileName}`;
+      mocks.user.get.mockResolvedValue(user);
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(asset));
+      mocks.move.create.mockResolvedValue({
+        id: 'move-id',
+        entityId: asset.id,
+        pathType: AssetPathType.Original,
+        oldPath: asset.originalPath,
+        newPath,
+      });
+
+      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Failed);
+
+      expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenLastCalledWith(motionId, { includeHidden: true });
     });
 
     it('should migrate single moving picture', async () => {
@@ -224,6 +306,7 @@ describe(StorageTemplateService.name, () => {
       mocks.user.get.mockResolvedValue(user);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(asset));
       mocks.album.getByAssetId.mockResolvedValueOnce([getForAlbum(album)]);
+      mockMoveCreate(mocks);
 
       expect(await sut.handleMigrationSingle({ id: asset.id })).toBe(JobStatus.Success);
 
@@ -246,6 +329,7 @@ describe(StorageTemplateService.name, () => {
 
       mocks.user.get.mockResolvedValue(user);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(asset));
+      mockMoveCreate(mocks);
 
       expect(await sut.handleMigrationSingle({ id: asset.id })).toBe(JobStatus.Success);
 
@@ -284,6 +368,7 @@ describe(StorageTemplateService.name, () => {
           lastModifiedAssetTimestamp: null,
         },
       ]);
+      mockMoveCreate(mocks);
 
       expect(await sut.handleMigrationSingle({ id: asset.id })).toBe(JobStatus.Success);
 
@@ -309,6 +394,7 @@ describe(StorageTemplateService.name, () => {
 
       mocks.user.get.mockResolvedValue(user);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(asset));
+      mockMoveCreate(mocks);
 
       expect(await sut.handleMigrationSingle({ id: asset.id })).toBe(JobStatus.Success);
 
@@ -344,6 +430,7 @@ describe(StorageTemplateService.name, () => {
       mocks.user.get.mockResolvedValue(user);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(assetBerlin));
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(assetLondon));
+      mockMoveCreate(mocks);
 
       await expect(sut.handleMigrationSingle({ id: assetBerlin.id })).resolves.toBe(JobStatus.Success);
       await expect(sut.handleMigrationSingle({ id: assetLondon.id })).resolves.toBe(JobStatus.Success);
@@ -421,48 +508,59 @@ describe(StorageTemplateService.name, () => {
       });
     });
 
-    it('should migrate previously failed move from previous new path when old path no longer exists, should validate file size still matches before moving', async () => {
+    it('should complete p6 recovery and move its sidecar at the historical path instead of a newly calculated duplicate path', async () => {
       const user = UserFactory.create();
+      const sidecarOldPath = '/data/upload/original.jpg.xmp';
       const asset = AssetFactory.from({
         fileCreatedAt: new Date('2022-06-19T23:41:36.910Z'),
       })
         .owner(user)
         .exif({ fileSizeInByte: 5000 })
+        .file({ type: AssetFileType.Sidecar, path: sidecarOldPath })
         .build();
 
       mocks.user.get.mockResolvedValue(user);
 
-      const previousFailedNewPath = `/data/library/${asset.ownerId}/2022/June/${asset.originalFileName}`;
-      const newPath = `/data/library/${asset.ownerId}/2022/2022-06-19/${asset.originalFileName}`;
+      const previousFailedNewPath = `/data/library/${asset.ownerId}/2022/2022-06-19/${asset.originalFileName}`;
+      const calculatedDuplicatePath = previousFailedNewPath.replace('.jpg', '+1.jpg');
 
       mocks.storage.checkFileExists.mockImplementation((path) => Promise.resolve(path === previousFailedNewPath));
       mocks.storage.stat.mockResolvedValue({ size: 5000 } as Stats);
       mocks.crypto.hashFile.mockResolvedValue(asset.checksum);
-      mocks.move.getByEntity.mockResolvedValue({
+      mocks.move.getByEntity.mockResolvedValueOnce({
         id: '123',
         entityId: asset.id,
         pathType: AssetPathType.Original,
         oldPath: asset.originalPath,
         newPath: previousFailedNewPath,
       });
+      mocks.move.getByEntity.mockResolvedValueOnce(undefined);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(getForStorageTemplate(asset));
-      mocks.move.update.mockResolvedValue({
-        id: '123',
+      mocks.move.create.mockResolvedValue({
+        id: 'sidecar-move-id',
         entityId: asset.id,
-        pathType: AssetPathType.Original,
-        oldPath: previousFailedNewPath,
-        newPath,
+        pathType: AssetFileType.Sidecar,
+        oldPath: sidecarOldPath,
+        newPath: `${previousFailedNewPath}.xmp`,
       });
 
       await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Success);
 
       expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledWith(asset.id);
-      expect(mocks.storage.checkFileExists).toHaveBeenCalledTimes(3);
+      expect(mocks.storage.checkFileExists).toHaveBeenCalledTimes(4);
       expect(mocks.storage.stat).toHaveBeenCalledWith(previousFailedNewPath);
-      expect(mocks.storage.rename).toHaveBeenCalledWith(previousFailedNewPath, newPath);
+      expect(mocks.storage.rename).not.toHaveBeenCalledWith(previousFailedNewPath, calculatedDuplicatePath);
       expect(mocks.storage.copyFile).not.toHaveBeenCalled();
-      expect(mocks.move.update).toHaveBeenCalledWith('123', { id: '123', oldPath: previousFailedNewPath, newPath });
-      expect(mocks.asset.update).toHaveBeenCalledWith({ id: asset.id, originalPath: newPath });
+      expect(mocks.move.update).not.toHaveBeenCalled();
+      expect(mocks.asset.update).toHaveBeenCalledWith({ id: asset.id, originalPath: previousFailedNewPath });
+      expect(mocks.storage.rename).toHaveBeenCalledWith(sidecarOldPath, `${previousFailedNewPath}.xmp`);
+      expect(mocks.storage.rename).not.toHaveBeenCalledWith(sidecarOldPath, `${calculatedDuplicatePath}.xmp`);
+      expect(mocks.asset.upsertFile).toHaveBeenCalledWith({
+        assetId: asset.id,
+        type: AssetFileType.Sidecar,
+        path: `${previousFailedNewPath}.xmp`,
+      });
+      expect(mocks.move.delete).toHaveBeenCalledWith('123');
     });
 
     it('should fail move if copying and hash of asset and the new file do not match', async () => {
@@ -489,7 +587,7 @@ describe(StorageTemplateService.name, () => {
         newPath,
       });
 
-      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Success);
+      await expect(sut.handleMigrationSingle({ id: asset.id })).resolves.toBe(JobStatus.Failed);
 
       expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledWith(asset.id);
       expect(mocks.storage.checkFileExists).toHaveBeenCalledTimes(1);
@@ -505,6 +603,7 @@ describe(StorageTemplateService.name, () => {
       expect(mocks.storage.unlink).toHaveBeenCalledWith(newPath);
       expect(mocks.storage.unlink).toHaveBeenCalledTimes(1);
       expect(mocks.asset.update).not.toHaveBeenCalled();
+      expect(mocks.move.delete).not.toHaveBeenCalled();
     });
 
     const testAsset = AssetFactory.from().exif({ fileSizeInByte: 12_345 }).build();
@@ -539,7 +638,7 @@ describe(StorageTemplateService.name, () => {
           newPath,
         });
 
-        await expect(sut.handleMigrationSingle({ id: testAsset.id })).resolves.toBe(JobStatus.Success);
+        await expect(sut.handleMigrationSingle({ id: testAsset.id })).resolves.toBe(JobStatus.Failed);
 
         expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledWith(testAsset.id);
         expect(mocks.storage.checkFileExists).toHaveBeenCalledTimes(3);
@@ -548,6 +647,7 @@ describe(StorageTemplateService.name, () => {
         expect(mocks.storage.copyFile).not.toHaveBeenCalled();
         expect(mocks.move.update).not.toHaveBeenCalled();
         expect(mocks.asset.update).not.toHaveBeenCalled();
+        expect(mocks.move.delete).not.toHaveBeenCalled();
       },
     );
   });
@@ -560,6 +660,99 @@ describe(StorageTemplateService.name, () => {
       await sut.handleMigration();
 
       expect(mocks.assetJob.streamForStorageTemplateJob).toHaveBeenCalled();
+    });
+
+    it('should continue after a failed live photo unit, clean empty directories, and report failure', async () => {
+      const user = UserFactory.create();
+      const failedAsset = AssetFactory.from({
+        livePhotoVideoId: 'missing-motion-id',
+        fileCreatedAt: new Date('2022-06-19T23:41:36.910Z'),
+      })
+        .owner(user)
+        .exif()
+        .build();
+      const successfulAsset = AssetFactory.from({
+        fileCreatedAt: new Date('2022-06-20T23:41:36.910Z'),
+      })
+        .owner(user)
+        .exif()
+        .build();
+      const failedAssetPath = `/data/library/${user.id}/2022/2022-06-19/${failedAsset.originalFileName}`;
+      const successfulAssetPath = `/data/library/${user.id}/2022/2022-06-20/${successfulAsset.originalFileName}`;
+
+      mocks.assetJob.streamForStorageTemplateJob.mockReturnValue(
+        makeStream([getForStorageTemplate(failedAsset), getForStorageTemplate(successfulAsset)]),
+      );
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(undefined);
+      mocks.user.getList.mockResolvedValue([user]);
+      mocks.move.create
+        .mockResolvedValueOnce({
+          id: 'failed-move-id',
+          entityId: failedAsset.id,
+          pathType: AssetPathType.Original,
+          oldPath: failedAsset.originalPath,
+          newPath: failedAssetPath,
+        })
+        .mockResolvedValueOnce({
+          id: 'successful-move-id',
+          entityId: successfulAsset.id,
+          pathType: AssetPathType.Original,
+          oldPath: successfulAsset.originalPath,
+          newPath: successfulAssetPath,
+        });
+
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
+
+      expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledWith('missing-motion-id', {
+        includeHidden: true,
+      });
+      expect(mocks.asset.update).toHaveBeenCalledWith({ id: successfulAsset.id, originalPath: successfulAssetPath });
+      expect(mocks.storage.removeEmptyDirs).toHaveBeenCalledWith('/data/library');
+    });
+
+    it('should continue after moveAsset returns false and report failure after processing later assets', async () => {
+      const firstAsset = AssetFactory.from().exif().build();
+      const secondAsset = AssetFactory.from().exif().build();
+      mocks.assetJob.streamForStorageTemplateJob.mockReturnValue(
+        makeStream([getForStorageTemplate(firstAsset), getForStorageTemplate(secondAsset)]),
+      );
+      mocks.user.getList.mockResolvedValue([]);
+      const moveAsset = vitest.spyOn(sut, 'moveAsset').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
+
+      expect(moveAsset).toHaveBeenCalledTimes(2);
+      expect(moveAsset).toHaveBeenNthCalledWith(1, getForStorageTemplate(firstAsset), {
+        storageLabel: null,
+        filename: firstAsset.originalFileName,
+      });
+      expect(moveAsset).toHaveBeenNthCalledWith(2, getForStorageTemplate(secondAsset), {
+        storageLabel: null,
+        filename: secondAsset.originalFileName,
+      });
+      expect(mocks.storage.removeEmptyDirs).toHaveBeenCalledWith('/data/library');
+    });
+
+    it('should continue after moveAsset throws and report failure after processing later assets', async () => {
+      const firstAsset = AssetFactory.from().exif().build();
+      const secondAsset = AssetFactory.from().exif().build();
+      mocks.assetJob.streamForStorageTemplateJob.mockReturnValue(
+        makeStream([getForStorageTemplate(firstAsset), getForStorageTemplate(secondAsset)]),
+      );
+      mocks.user.getList.mockResolvedValue([]);
+      const moveAsset = vitest
+        .spyOn(sut, 'moveAsset')
+        .mockRejectedValueOnce(new Error('move failed'))
+        .mockResolvedValueOnce(true);
+
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
+
+      expect(moveAsset).toHaveBeenCalledTimes(2);
+      expect(moveAsset).toHaveBeenLastCalledWith(getForStorageTemplate(secondAsset), {
+        storageLabel: null,
+        filename: secondAsset.originalFileName,
+      });
+      expect(mocks.storage.removeEmptyDirs).toHaveBeenCalledWith('/data/library');
     });
 
     it('should handle an asset with a duplicate destination', async () => {
@@ -712,21 +905,13 @@ describe(StorageTemplateService.name, () => {
         oldPath,
         newPath,
       });
-      mocks.storage.stat.mockResolvedValueOnce({
-        atime: new Date(),
-        mtime: new Date(),
-      } as Stats);
-      mocks.storage.stat.mockResolvedValueOnce({
-        size: 5000,
-      } as Stats);
-      mocks.storage.stat.mockResolvedValueOnce({
-        size: 5000,
-        atime: new Date(),
-        mtime: new Date(),
-      } as Stats);
+      const timestamps = { atime: new Date(), mtime: new Date() };
+      mocks.storage.stat.mockImplementation((path) =>
+        Promise.resolve(path === newPath ? ({ size: 5000 } as Stats) : ({ size: 5000, ...timestamps } as Stats)),
+      );
       mocks.crypto.hashFile.mockResolvedValue(asset.checksum);
 
-      await sut.handleMigration();
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Success);
 
       expect(mocks.assetJob.streamForStorageTemplateJob).toHaveBeenCalled();
       expect(mocks.storage.rename).toHaveBeenCalledWith(oldPath, newPath);
@@ -762,7 +947,7 @@ describe(StorageTemplateService.name, () => {
         size: 100,
       } as Stats);
 
-      await sut.handleMigration();
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
 
       expect(mocks.assetJob.streamForStorageTemplateJob).toHaveBeenCalled();
       expect(mocks.storage.rename).toHaveBeenCalledWith(
@@ -800,7 +985,7 @@ describe(StorageTemplateService.name, () => {
       });
       mocks.user.getList.mockResolvedValue([user]);
 
-      await sut.handleMigration();
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
 
       expect(mocks.assetJob.streamForStorageTemplateJob).toHaveBeenCalled();
       expect(mocks.storage.rename).toHaveBeenCalledWith(

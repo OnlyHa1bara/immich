@@ -142,80 +142,114 @@ export class StorageTemplateService extends BaseService {
 
   @OnJob({ name: JobName.StorageTemplateMigrationSingle, queue: QueueName.StorageTemplateMigration })
   async handleMigrationSingle({ id }: JobOf<JobName.StorageTemplateMigrationSingle>): Promise<JobStatus> {
-    const config = await this.getConfig({ withCache: true });
-    const isStorageTemplateEnabled = config.storageTemplate.enabled;
-    if (!isStorageTemplateEnabled) {
-      return JobStatus.Skipped;
-    }
+    try {
+      const config = await this.getConfig({ withCache: true });
+      const isStorageTemplateEnabled = config.storageTemplate.enabled;
+      if (!isStorageTemplateEnabled) {
+        return JobStatus.Skipped;
+      }
 
-    const asset = await this.assetJobRepository.getForStorageTemplateJob(id);
-    if (!asset) {
+      const asset = await this.assetJobRepository.getForStorageTemplateJob(id);
+      if (!asset) {
+        return JobStatus.Failed;
+      }
+
+      const user = await this.userRepository.get(asset.ownerId, {});
+      const storageLabel = user?.storageLabel || null;
+      const filename = asset.originalFileName || asset.id;
+      if (!(await this.moveAsset(asset, { storageLabel, filename }))) {
+        return JobStatus.Failed;
+      }
+
+      // move motion part of live photo
+      if (asset.livePhotoVideoId) {
+        const livePhotoVideo = await this.assetJobRepository.getForStorageTemplateJob(asset.livePhotoVideoId, {
+          includeHidden: true,
+        });
+        if (!livePhotoVideo) {
+          return JobStatus.Failed;
+        }
+        const motionFilename = getLivePhotoMotionFilename(filename, livePhotoVideo.originalPath);
+        if (!(await this.moveAsset(livePhotoVideo, { storageLabel, filename: motionFilename }, asset))) {
+          return JobStatus.Failed;
+        }
+      }
+    } catch (error: Error | any) {
+      this.logger.error(`Problem applying storage template migration`, error?.stack, { id });
       return JobStatus.Failed;
     }
 
-    const user = await this.userRepository.get(asset.ownerId, {});
-    const storageLabel = user?.storageLabel || null;
-    const filename = asset.originalFileName || asset.id;
-    await this.moveAsset(asset, { storageLabel, filename });
-
-    // move motion part of live photo
-    if (asset.livePhotoVideoId) {
-      const livePhotoVideo = await this.assetJobRepository.getForStorageTemplateJob(asset.livePhotoVideoId, {
-        includeHidden: true,
-      });
-      if (!livePhotoVideo) {
-        return JobStatus.Failed;
-      }
-      const motionFilename = getLivePhotoMotionFilename(filename, livePhotoVideo.originalPath);
-      await this.moveAsset(livePhotoVideo, { storageLabel, filename: motionFilename }, asset);
-    }
     return JobStatus.Success;
   }
 
   @OnJob({ name: JobName.StorageTemplateMigration, queue: QueueName.StorageTemplateMigration })
   async handleMigration(): Promise<JobStatus> {
     this.logger.log('Starting storage template migration');
-    const { storageTemplate } = await this.getConfig({ withCache: true });
-    const { enabled } = storageTemplate;
-    if (!enabled) {
-      this.logger.log('Storage template migration disabled, skipping');
-      return JobStatus.Skipped;
-    }
+    let failures = 0;
+    let enabled = false;
 
-    await this.moveRepository.cleanMoveHistory();
-
-    const assets = this.assetJobRepository.streamForStorageTemplateJob();
-    const users = await this.userRepository.getList();
-
-    for await (const asset of assets) {
-      const user = users.find((user) => user.id === asset.ownerId);
-      const storageLabel = user?.storageLabel || null;
-      const filename = asset.originalFileName || asset.id;
-      await this.moveAsset(asset, { storageLabel, filename });
-
-      if (!asset.livePhotoVideoId) {
-        continue;
+    try {
+      const { storageTemplate } = await this.getConfig({ withCache: true });
+      enabled = storageTemplate.enabled;
+      if (!enabled) {
+        this.logger.log('Storage template migration disabled, skipping');
+        return JobStatus.Skipped;
       }
 
-      // move motion part of live photo
-      const livePhotoVideo = await this.assetJobRepository.getForStorageTemplateJob(asset.livePhotoVideoId, {
-        includeHidden: true,
-      });
-      if (!livePhotoVideo) {
-        continue;
-      }
+      await this.moveRepository.cleanMoveHistory();
 
-      const motionFilename = getLivePhotoMotionFilename(filename, livePhotoVideo.originalPath);
-      await this.moveAsset(livePhotoVideo, { storageLabel, filename: motionFilename }, asset);
+      const assets = this.assetJobRepository.streamForStorageTemplateJob();
+      const users = await this.userRepository.getList();
+
+      for await (const asset of assets) {
+        try {
+          const user = users.find((user) => user.id === asset.ownerId);
+          const storageLabel = user?.storageLabel || null;
+          const filename = asset.originalFileName || asset.id;
+          if (!(await this.moveAsset(asset, { storageLabel, filename }))) {
+            failures++;
+            continue;
+          }
+
+          // move motion part of live photo
+          if (!asset.livePhotoVideoId) {
+            continue;
+          }
+          const livePhotoVideo = await this.assetJobRepository.getForStorageTemplateJob(asset.livePhotoVideoId, {
+            includeHidden: true,
+          });
+          if (!livePhotoVideo) {
+            failures++;
+            continue;
+          }
+          const motionFilename = getLivePhotoMotionFilename(filename, livePhotoVideo.originalPath);
+          if (!(await this.moveAsset(livePhotoVideo, { storageLabel, filename: motionFilename }, asset))) {
+            failures++;
+          }
+        } catch (error: Error | any) {
+          failures++;
+          this.logger.error(`Problem applying storage template migration`, error?.stack, { id: asset.id });
+        }
+      }
+    } catch (error: Error | any) {
+      failures++;
+      this.logger.error(`Problem applying storage template migration`, error?.stack);
     }
 
-    this.logger.debug('Cleaning up empty directories...');
-    const libraryFolder = StorageCore.getBaseFolder(StorageFolder.Library);
-    await this.storageRepository.removeEmptyDirs(libraryFolder);
+    if (enabled) {
+      this.logger.debug('Cleaning up empty directories...');
+      try {
+        const libraryFolder = StorageCore.getBaseFolder(StorageFolder.Library);
+        await this.storageRepository.removeEmptyDirs(libraryFolder);
+      } catch (error: Error | any) {
+        failures++;
+        this.logger.error(`Problem cleaning up empty storage template directories`, error?.stack);
+      }
+    }
 
     this.logger.log('Finished storage template migration');
 
-    return JobStatus.Success;
+    return failures > 0 ? JobStatus.Failed : JobStatus.Success;
   }
 
   @OnEvent({ name: 'AssetDelete' })
@@ -224,11 +258,11 @@ export class StorageTemplateService extends BaseService {
     await this.moveRepository.cleanMoveHistorySingle(assetId);
   }
 
-  async moveAsset(asset: StorageAsset, metadata: MoveAssetMetadata, stillPhoto?: StorageAsset) {
+  async moveAsset(asset: StorageAsset, metadata: MoveAssetMetadata, stillPhoto?: StorageAsset): Promise<boolean> {
     if (asset.isExternal || StorageCore.isAndroidMotionPath(asset.originalPath)) {
       // External assets are not affected by storage template
       // TODO: shouldn't this only apply to external assets?
-      return;
+      return true;
     }
 
     return this.databaseRepository.withLock(DatabaseLock.StorageTemplateMigration, async () => {
@@ -236,32 +270,33 @@ export class StorageTemplateService extends BaseService {
       const oldPath = originalPath;
       const newPath = await this.getTemplatePath(asset, metadata, stillPhoto);
 
-      if (!fileSizeInByte) {
+      if (fileSizeInByte === null) {
         this.logger.error(`Asset ${id} missing exif info, skipping storage template migration`);
-        return;
+        return false;
       }
 
-      try {
-        await this.storageCore.moveFile({
+      const originalMove = await this.storageCore.moveFileWithResult({
+        entityId: id,
+        pathType: AssetPathType.Original,
+        oldPath,
+        newPath,
+        assetInfo: { sizeInBytes: fileSizeInByte, checksum },
+      });
+      if (!originalMove.ok || !originalMove.path) {
+        return false;
+      }
+
+      const sidecarPath = getAssetFile(asset.files, AssetFileType.Sidecar, { isEdited: false })?.path;
+      if (sidecarPath) {
+        return this.storageCore.moveFile({
           entityId: id,
-          pathType: AssetPathType.Original,
-          oldPath,
-          newPath,
-          assetInfo: { sizeInBytes: fileSizeInByte, checksum },
+          pathType: AssetFileType.Sidecar,
+          oldPath: sidecarPath,
+          newPath: `${originalMove.path}.xmp`,
         });
-
-        const sidecarPath = getAssetFile(asset.files, AssetFileType.Sidecar, { isEdited: false })?.path;
-        if (sidecarPath) {
-          await this.storageCore.moveFile({
-            entityId: id,
-            pathType: AssetFileType.Sidecar,
-            oldPath: sidecarPath,
-            newPath: `${newPath}.xmp`,
-          });
-        }
-      } catch (error: any) {
-        this.logger.error(`Problem applying storage template`, error?.stack, { id, oldPath, newPath });
       }
+
+      return true;
     });
   }
 
@@ -390,7 +425,7 @@ export class StorageTemplateService extends BaseService {
       return destination;
     } catch (error: any) {
       this.logger.error(`Unable to get template path for ${filename}: ${error}`);
-      return asset.originalPath;
+      throw error;
     }
   }
 

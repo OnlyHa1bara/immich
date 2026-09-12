@@ -60,6 +60,8 @@ These environment variables are used by the `docker-compose.yml` file and do **N
 | :----------------------- | :--------------------------------------------------------------------------------------------------- | :-----: | :--------- |
 | `IMMICH_WORKERS_INCLUDE` | Only run these workers.                                                                              |         | server     |
 | `IMMICH_WORKERS_EXCLUDE` | Do not run these workers. Matches against default workers, or `IMMICH_WORKERS_INCLUDE` if specified. |         | server     |
+| `IMMICH_JOB_TIMEOUT_WARN_MS` | Log a warning when a job exceeds this duration in milliseconds. Set to `0` to disable; when both are enabled, it must be lower than `IMMICH_JOB_TIMEOUT_MS`. | `1800000` (30 min) | server |
+| `IMMICH_JOB_TIMEOUT_MS` | Mark a job as failed when it exceeds this duration in milliseconds. Set to `0` to disable. The full `StorageTemplateMigration` job is exempt because it cannot be safely cancelled. | `0` | server |
 
 :::info
 Information on the current workers can be found [here](/administration/jobs-workers).
