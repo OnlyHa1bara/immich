@@ -54,6 +54,10 @@
     scrubberWidth = $bindable(),
   }: Props = $props();
 
+  // Kept for compatibility with callers; plane positioning no longer needs these offsets.
+  void timelineTopOffset;
+  void timelineBottomOffset;
+
   let isHover = $state(false);
   let isDragging = $state(false);
   let isHoverOnPaddingTop = $state(false);

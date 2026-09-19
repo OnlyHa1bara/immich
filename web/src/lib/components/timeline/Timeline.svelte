@@ -344,6 +344,10 @@
 
   // note: don't throttle, debounce, or otherwise make this function async - it causes flicker
   const handleTimelineScroll = () => {
+    if (!scrollableElement) {
+      return;
+    }
+
     const maxScroll = timelineManager.planeHeight - timelineManager.viewportHeight;
     timelineScrollPercent = maxScroll > 0 ? clamp(timelineManager.visibleWindow.top / maxScroll, 0, 1) : 0;
 
