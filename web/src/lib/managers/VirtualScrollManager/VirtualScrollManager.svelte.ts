@@ -28,7 +28,7 @@ export abstract class VirtualScrollManager {
     this.onTopSectionHeightChanged(oldValue, value);
   }
 
-  protected onTopSectionHeightChanged(_oldHeight: number, _newHeight: number) {}
+  protected onTopSectionHeightChanged(..._: [number, number]) {}
 
   visibleWindow = $derived.by(() => ({
     top: this.#scrollTop,

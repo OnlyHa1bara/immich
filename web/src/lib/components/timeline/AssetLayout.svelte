@@ -6,7 +6,6 @@
   import type { CommonPosition } from '$lib/utils/layout-utils';
   import type { Snippet } from 'svelte';
   import { flip } from 'svelte/animate';
-  import { scale } from 'svelte/transition';
 
   let { isUploading } = uploadAssetsStore;
 
@@ -29,7 +28,6 @@
   const { viewerAssets, width, height, manager, thumbnail, customThumbnailLayout }: Props = $props();
 
   const transitionDuration = $derived(manager.suspendTransitions && !$isUploading ? 0 : 150);
-  const scaleDuration = $derived(transitionDuration === 0 ? 0 : transitionDuration + 100);
 </script>
 
 <!-- Image grid -->
