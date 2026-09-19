@@ -26,17 +26,19 @@ function deriveLocalDateTimeFromFileCreatedAt(arg: TimelineAsset): TimelineAsset
 
 function createScrollableElement() {
   const element = document.createElement('div');
-  Object.defineProperty(element, 'scrollTop', { configurable: true, value: 0, writable: true });
-  Object.defineProperty(element, 'scrollTo', {
-    configurable: true,
-    value: ({ top = 0 }: ScrollToOptions) => {
-      element.scrollTop = top;
+  Object.defineProperties(element, {
+    scrollTop: { configurable: true, value: 0, writable: true },
+    scrollTo: {
+      configurable: true,
+      value: ({ top = 0 }: ScrollToOptions) => {
+        element.scrollTop = top;
+      },
     },
-  });
-  Object.defineProperty(element, 'scrollBy', {
-    configurable: true,
-    value: (_x: number, y: number) => {
-      element.scrollTop += y;
+    scrollBy: {
+      configurable: true,
+      value: (_x: number, y: number) => {
+        element.scrollTop += y;
+      },
     },
   });
   return element;
