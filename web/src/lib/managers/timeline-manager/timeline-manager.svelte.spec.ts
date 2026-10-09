@@ -4,7 +4,7 @@ import { sdkMock } from '$lib/__mocks__/sdk.mock';
 import { eventManager } from '$lib/managers/event-manager.svelte';
 import { getTimelineMonthByDate } from '$lib/managers/timeline-manager/internal/search-support.svelte';
 import { AbortError } from '$lib/utils';
-import { fromISODateTimeUTCToObject } from '$lib/utils/timeline-util';
+import { fromISODateTimeUTCToObject, toTimelineAsset } from '$lib/utils/timeline-util';
 import { assetFactory, timelineAssetFactory, toResponseDto } from '@test-data/factories/asset-factory';
 import { TimelineManager } from './timeline-manager.svelte';
 import type { TimelineAsset } from './types';
@@ -589,6 +589,45 @@ describe('TimelineManager', () => {
 
     afterEach(() => {
       timelineManager.destroy();
+    });
+
+    it('removes album assets through the upstream event while retaining the fixed plane layout', async () => {
+      await timelineManager.updateOptions({ albumId: 'album-id' });
+      const assets = timelineAssetFactory.buildList(2).map(deriveLocalDateTimeFromFileCreatedAt);
+      timelineManager.upsertAssets(assets);
+
+      eventManager.emit('AlbumRemoveAssets', { albumIds: ['other-album-id'], assetIds: [assets[0].id] });
+      expect(timelineManager.assetCount).toBe(2);
+
+      eventManager.emit('AlbumRemoveAssets', { albumIds: ['album-id'], assetIds: [assets[0].id] });
+
+      expect((await getAssets(timelineManager)).map((asset) => asset.id)).toEqual([assets[1].id]);
+      expect(timelineManager.planeHeight).toBe(timelineManager.totalViewerHeight);
+      expect(timelineManager.months[0].planeTop).toBe(timelineManager.topSectionHeight);
+    });
+
+    it('preserves upstream stack create, primary update, and delete events on the fixed plane', async () => {
+      await timelineManager.updateOptions({ withStacked: true });
+      const assets = assetFactory.buildList(2, {
+        fileCreatedAt: '2024-03-01T12:00:00.000Z',
+        localDateTime: '2024-03-01T12:00:00.000Z',
+      });
+      timelineManager.upsertAssets(assets.map((asset) => toTimelineAsset(asset)));
+
+      eventManager.emit('StackCreate', { id: 'stack-id', primaryAssetId: assets[0].id, assets });
+      expect((await getAssets(timelineManager)).map((asset) => asset.id)).toEqual([assets[0].id]);
+      expect(timelineManager.months[0].getFirstAsset().stack?.primaryAssetId).toBe(assets[0].id);
+
+      eventManager.emit('StackUpdate', { id: 'stack-id', primaryAssetId: assets[1].id, assets });
+      expect((await getAssets(timelineManager)).map((asset) => asset.id)).toEqual([assets[1].id]);
+      expect(timelineManager.months[0].getFirstAsset().stack?.primaryAssetId).toBe(assets[1].id);
+
+      eventManager.emit('StackDelete', { id: 'stack-id', assets });
+      const restoredAssets = await getAssets(timelineManager);
+      expect(restoredAssets.map((asset) => asset.id).toSorted()).toEqual(assets.map((asset) => asset.id).toSorted());
+      expect(restoredAssets.every((asset) => asset.stack === null)).toBe(true);
+      expect(timelineManager.planeHeight).toBe(timelineManager.totalViewerHeight);
+      expect(timelineManager.months[0].planeTop).toBe(timelineManager.topSectionHeight);
     });
 
     it('does not insert live event assets with a different owner into a user-scoped timeline', async () => {

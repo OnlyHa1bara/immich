@@ -9,12 +9,10 @@ This is the lightweight release loop for the OnlyHa1bara fork. It is intended fo
 bringing a small set of local fixes onto a new Immich release, publishing the
 resulting server image to Harbor, and rolling it out through `k3s-configs`.
 
-The normal loop is deliberately small: inspect the upstream delta, replay the
-local commits, run checks that match the changed code, build one immutable image,
-and let GitOps perform the deployment. A full backup rehearsal, security audit,
-or long observation window is not a default gate here. If the upstream release
-contains significant database migrations or destructive data changes, stop and
-make a separate operations decision before deploying it.
+Inspect the full upstream delta from the deployed base, replay the local commits, run checks on the exact committed build tree, and publish one immutable image through GitOps.
+Releases with no database changes do not require an online full-database export or write-stop window by default.
+Any migration, schema, startup database maintenance, or driver change requires a separately selected maintenance and recovery plan before activation, including applicable isolated migration rehearsal and no-write gates.
+Building and publishing the image can proceed while those activation gates are prepared.
 
 ## 1. Inspect the new upstream release
 
@@ -120,6 +118,10 @@ check or formatter instead. A full test suite remains useful when the change is
 wide or the targeted tests do not cover the touched path, but it is not a
 routine release requirement.
 
+For an ESM server release, adapt replayed imports to the upstream `.js` and type-only import conventions.
+Compare any compiled ConfigMap overlay against the exact target-image file before activation; an older CommonJS overlay cannot replace an ESM module.
+Use the normal lint command first and record any dependency-resolution failure before correcting the environment; retain every lint rule.
+
 ## 4. Build and publish one image
 
 Build from the repository root. `server/Dockerfile` copies the server, web, CLI,
@@ -168,8 +170,9 @@ git status --short
 ```
 
 Edit the image in
-`deploy/self-host/immich/immich-official.yaml` and keep the existing
-`$imagepolicy` marker on the line. Review the one-line manifest change, then
+`deploy/self-host/immich/immich-official.yaml` through its Reviewed Git owner.
+The historical unrelated ImagePolicy and setters are retired; do not restore a marker during a version upgrade.
+Review the image change and any separately reviewed overlay correction, then
 commit and push it through the normal GitOps path:
 
 ```bash
