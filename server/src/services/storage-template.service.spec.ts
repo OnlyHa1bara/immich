@@ -662,6 +662,26 @@ describe(StorageTemplateService.name, () => {
       expect(mocks.assetJob.streamForStorageTemplateJob).toHaveBeenCalled();
     });
 
+    it('should process a later live photo failure after skipping the motion part of a normal asset', async () => {
+      const normalAsset = AssetFactory.from({ livePhotoVideoId: null }).exif().build();
+      const livePhotoAsset = AssetFactory.from({ livePhotoVideoId: 'missing-motion-id' }).exif().build();
+      mocks.assetJob.streamForStorageTemplateJob.mockReturnValue(
+        makeStream([getForStorageTemplate(normalAsset), getForStorageTemplate(livePhotoAsset)]),
+      );
+      mocks.assetJob.getForStorageTemplateJob.mockResolvedValue(undefined);
+      mocks.user.getList.mockResolvedValue([]);
+      const moveAsset = vitest.spyOn(sut, 'moveAsset').mockResolvedValue(true);
+
+      await expect(sut.handleMigration()).resolves.toBe(JobStatus.Failed);
+
+      expect(moveAsset).toHaveBeenCalledTimes(2);
+      expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledOnce();
+      expect(mocks.assetJob.getForStorageTemplateJob).toHaveBeenCalledWith('missing-motion-id', {
+        includeHidden: true,
+      });
+      expect(mocks.storage.removeEmptyDirs).toHaveBeenCalledWith('/data/library');
+    });
+
     it('should continue after a failed live photo unit, clean empty directories, and report failure', async () => {
       const user = UserFactory.create();
       const failedAsset = AssetFactory.from({
