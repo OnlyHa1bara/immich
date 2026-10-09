@@ -117,6 +117,39 @@ describe(JobRepository.name, () => {
     expect(error).toHaveBeenCalledTimes(1);
   });
 
+  it('should propagate an operation rejection and clean up both watchdog timers', async () => {
+    env = mockEnvData({ job: { timeoutWarnMs: 50, timeoutMs: 100 } });
+    const operationError = new Error('operation failed');
+    emit.mockRejectedValue(operationError);
+    sut.startWorkers();
+
+    await expect(getProcessor(QueueName.BackgroundTask)(job)).rejects.toBe(operationError);
+
+    expect(vitest.getTimerCount()).toBe(0);
+    await vitest.advanceTimersByTimeAsync(1000);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('should consume an operation rejection arriving after the watchdog timeout', async () => {
+    env = mockEnvData({ job: { timeoutWarnMs: 50, timeoutMs: 100 } });
+    const pending = Promise.withResolvers<void>();
+    emit.mockReturnValue(pending.promise);
+    sut.startWorkers();
+
+    const result = getProcessor(QueueName.BackgroundTask)(job);
+    const failure = expect(result).rejects.toThrow('Job execution exceeded the timeout threshold');
+    await vitest.advanceTimersByTimeAsync(100);
+    await failure;
+
+    pending.reject(new Error('late operation failed'));
+    await vitest.advanceTimersByTimeAsync(1000);
+
+    expect(vitest.getTimerCount()).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
   it('should disable both watchdog timers when configured as zero', async () => {
     env = mockEnvData({ job: { timeoutWarnMs: 0, timeoutMs: 0 } });
     const pending = Promise.withResolvers<void>();
