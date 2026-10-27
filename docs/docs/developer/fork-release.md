@@ -10,9 +10,9 @@ bringing a small set of local fixes onto a new Immich release, publishing the
 resulting server image to Harbor, and rolling it out through `k3s-configs`.
 
 Inspect the full upstream delta from the deployed base, replay the local commits, run checks on the exact committed build tree, and publish one immutable image through GitOps.
-Releases with no database changes do not require an online full-database export or write-stop window by default.
-Any migration, schema, startup database maintenance, or driver change requires a separately selected maintenance and recovery plan before activation, including applicable isolated migration rehearsal and no-write gates.
-Building and publishing the image can proceed while those activation gates are prepared.
+Use the routine Immich path in the [k3s-configs upgrade runbook](https://git.ha1bara.com/ha1bara_dev/devops/k3s-configs/-/blob/main/docs/current/runbooks/IMMICH_FORK_UPSTREAM_UPGRADE_RUNBOOK.md).
+Assess migrations by their actual effect: ordinary compatible changes run during startup; destructive changes, incompatible dependencies, expensive backfills or concrete failures require a targeted maintenance and recovery plan before activation.
+New migrations alone do not require an online full-database export, restore rehearsal or write-stop window.
 
 ## 1. Inspect the new upstream release
 
@@ -148,15 +148,11 @@ docker buildx build \
 ```
 
 Keep the checkout committed before building. The image metadata records the
-source ref and commit; a dirty checkout makes that provenance misleading. After
-the push, record the Harbor manifest digest and do one quick image inspection:
+source ref and commit; a dirty checkout makes that provenance misleading.
+After the push, record the Harbor manifest digest for the GitOps image reference:
 
 ```bash
 docker buildx imagetools inspect "${IMAGE}"
-docker pull "${IMAGE}"
-docker image inspect "${IMAGE}" \
-  --format '{{range .Config.Env}}{{println .}}{{end}}' \
-  | rg '^IMMICH_(BUILD|BUILD_IMAGE|SOURCE_REF|SOURCE_COMMIT)='
 ```
 
 ## 5. Update GitOps and deploy
@@ -173,17 +169,17 @@ Edit the image in
 `deploy/self-host/immich/immich-official.yaml` through its Reviewed Git owner.
 The historical unrelated ImagePolicy and setters are retired; do not restore a marker during a version upgrade.
 Review the image change and any separately reviewed overlay correction, then
-commit and push it through the normal GitOps path:
+commit and push it through the normal GitOps path, pinning the published tag and manifest digest:
 
 ```bash
 git diff --check
 git diff -- deploy/self-host/immich/immich-official.yaml
 git add deploy/self-host/immich/immich-official.yaml
 git commit -m "feat(immich): deploy fork ${TAG}"
-git push origin main
+PUBLISHED_REV="$(git rev-parse HEAD)"
+git push origin HEAD:main &&
+  flux reconcile kustomization flux-system -n flux-system --with-source
 
-flux reconcile kustomization flux-system -n flux-system --with-source
-kubectl rollout status deployment/immich -n immich --timeout=15m
 ```
 
 If `git status --short` shows unrelated work, stop and preserve it rather than
@@ -192,20 +188,15 @@ rewriting the checkout. The active manifest is the source of truth; a temporary
 
 ## 6. Lightweight post-deploy check
 
-Confirm that the new pod is ready and uses the image that was just published:
+Set `DIGEST` to the published manifest digest, then run the existing read-only check once to confirm the exact Flux revision, rollout and image:
 
 ```bash
-kubectl get pods -n immich -l app=immich -o wide
-kubectl get pods -n immich -l app=immich \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}'
-kubectl logs -n immich deploy/immich --since=15m \
-  | rg -i 'migration|ready|error|template not initialized'
+python3 scripts/checks/check_immich_release.py \
+  --revision "${PUBLISHED_REV}" --image "${IMAGE}@${DIGEST}"
 ```
 
-Check the service ping through the existing route or port-forward if that is
-part of the change. A migration warning or an application error that is new in
-this release needs follow-up; existing baseline warnings can be recorded
-without blocking the whole release loop.
+If reconciliation is still progressing, rerun the check after it converges.
+Use targeted diagnostics for actual failures; routine upgrades do not add node-pull Pods, detailed business acceptance or a fixed observation interval.
 
 ## Rollback note
 
