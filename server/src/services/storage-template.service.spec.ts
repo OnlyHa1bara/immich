@@ -332,6 +332,7 @@ describe(StorageTemplateService.name, () => {
 
       mocks.user.get.mockResolvedValue(user);
       mocks.assetJob.getForStorageTemplateJob.mockResolvedValueOnce(getForStorageTemplate(asset));
+      mockMoveCreate(mocks);
 
       expect(await sut.handleMigrationSingle({ id: asset.id })).toBe(JobStatus.Success);
 
