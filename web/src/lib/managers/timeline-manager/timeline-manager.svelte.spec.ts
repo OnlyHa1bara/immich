@@ -614,7 +614,9 @@ describe('TimelineManager', () => {
 
     test('removes album assets through the upstream event while retaining the fixed plane layout', async () => {
       await timelineManager.updateOptions({ albumId: 'album-id' });
-      const assets = factory.many(2, () => factory.timelineAsset()).map((asset) => deriveLocalDateTimeFromFileCreatedAt(asset));
+      const assets = factory
+        .many(2, () => factory.timelineAsset())
+        .map((asset) => deriveLocalDateTimeFromFileCreatedAt(asset));
       timelineManager.upsertAssets(assets);
 
       eventManager.emit('AlbumRemoveAssets', { albumIds: ['other-album-id'], assetIds: [assets[0].id] });
@@ -630,10 +632,12 @@ describe('TimelineManager', () => {
 
     test('preserves upstream stack create, primary update, and delete events on the fixed plane', async () => {
       await timelineManager.updateOptions({ withStacked: true });
-      const assets = factory.many(2, () => factory.asset({
-        fileCreatedAt: '2024-03-01T12:00:00.000Z',
-        localDateTime: '2024-03-01T12:00:00.000Z',
-      }));
+      const assets = factory.many(2, () =>
+        factory.asset({
+          fileCreatedAt: '2024-03-01T12:00:00.000Z',
+          localDateTime: '2024-03-01T12:00:00.000Z',
+        }),
+      );
       timelineManager.upsertAssets(assets.map((asset) => toTimelineAsset(asset)));
 
       eventManager.emit('StackCreate', { id: 'stack-id', primaryAssetId: assets[0].id, assets });
