@@ -648,12 +648,7 @@
   bind:this={scrollableElement}
   onscroll={() => (timelineManager.updateSlidingWindow(), handleTimelineScroll(), updateIsScrolling())}
 >
-  <section
-    bind:this={timelineElement}
-    id="virtual-timeline"
-    class:invisible
-    style:height={timelineManager.planeHeight + 'px'}
-  >
+  <section id="virtual-timeline" class:invisible style:height={timelineManager.planeHeight + 'px'}>
     <section
       bind:clientHeight={timelineManager.topSectionHeight}
       class:invisible

@@ -326,12 +326,12 @@ export class TimelineManager extends VirtualScrollManager {
     }
   }
 
-  /**
-   * Derives every month's planeTop by walking outward from the anchor. The anchor
-   * stays pinned at anchorPlaneTop, so any height change elsewhere shifts months
-   * away from the anchor — content at the viewport-top stays stable as long as
-   * trackAnchorToViewportTop ran beforehand.
-   */
+  /*
+  Derives every month's planeTop by walking outward from the anchor. The anchor
+  stays pinned at anchorPlaneTop, so any height change elsewhere shifts months
+  away from the anchor — content at the viewport-top stays stable as long as
+  trackAnchorToViewportTop ran beforehand.
+  */
   positionMonthsOnPlane() {
     if (this.months.length === 0) {
       this.planeHeight = this.topSectionHeight + this.bottomSectionHeight;
@@ -403,10 +403,10 @@ export class TimelineManager extends VirtualScrollManager {
     );
   }
 
-  /**
-   * Hard repoint: slide every planeTop and scrollTop to pull the anchor back
-   * toward PLANE_CENTER, or pin month 0 to topSectionHeight when it fits.
-   */
+  /*
+  Hard repoint: slide every planeTop and scrollTop to pull the anchor back
+  toward PLANE_CENTER, or pin month 0 to topSectionHeight when it fits.
+  */
   recenterPlane() {
     clearTimeout(this.#recenterTimer);
     this.#recenterTimer = undefined;
