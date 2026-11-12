@@ -26,8 +26,8 @@
   import { isAssetViewerRoute, navigate } from '#lib/utils/navigation.ts';
   import { getTimes, type ScrubberListener } from '#lib/utils/timeline-util.ts';
   import { type AlbumResponseDto, type PersonResponseDto, type UserResponseDto } from '@immich/sdk';
-  import { DateTime } from 'luxon';
   import { clamp } from 'lodash-es';
+  import { DateTime } from 'luxon';
   import { onDestroy, onMount, tick, type Snippet } from 'svelte';
   import type { UpdatePayload } from 'vite';
   import { afterNavigate, beforeNavigate } from '$app/navigation';
